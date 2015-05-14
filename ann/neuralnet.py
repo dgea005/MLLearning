@@ -12,7 +12,7 @@ class ann_2:
     """
     def __init__(self, features, hl1_size, hl2_size, classes,
                  epochs=10, batch_size=100, rho=0.99, eta=1e-6,
-                 reg_penalty=1, eta_init = 0.1):
+                 reg_penalty=1, eta_init=0.1):
         """
         return a ann_2 object with these architectures
         :param features: number features input to network (input layer size)
@@ -40,8 +40,7 @@ class ann_2:
         self.w3 = np.random.normal(0, self.eta_init, (self.classes, self.hl2_size + 1))
 
     # initialise hyper parameters - method just to change the hyperparameters
-
-    def set_hyperparams(self, epochs=100, batch_size=100, rho=0.99, eta=0.1, reg_penalty = 1):
+    def set_hyperparams(self, epochs=100, batch_size=100, rho=0.99, eta=1e-6, reg_penalty=1):
         self.epochs = epochs
         self.batch_size = batch_size
         self.rho = rho
@@ -77,16 +76,45 @@ class ann_2:
         # add the bias term
         bias2 = np.ones(a2.shape[1]).reshape(1, a2.shape[1])
         a2 = np.concatenate((bias2, a2), axis=0)
+        # to make up for dropout
+        a2 *= 0.5
         z3 = np.dot(self.w2, a2)
         a3 = self.f(z3)
         bias3 = np.ones(a3.shape[1]).reshape(1, a3.shape[1])
         a3 = np.concatenate((bias3, a3), axis=0)
+        # to make up for dropout
+        a3 *= 0.5
         z4 = np.dot(self.w3, a3)
         a4 = self.f(z4)
         return {'z2': z2, 'a2': a2, 'z3': z3, 'a3': a3, 'z4': z4, 'a4': a4}
 
     # should have some function for checking the data and labels are in the correct dimension
     # this could be done at the train level
+
+    def forward_propagation_dropout(self, data, p=0.5):
+        bias1 = np.ones(data.T.shape[1]).reshape(1, data.T.shape[1])
+        data = np.concatenate((bias1, data.T), axis=0)
+        z2 = np.dot(self.w1, data)
+        # f will be our activation function - ReLU
+        a2 = self.f(z2)
+        # add the bias term
+        bias2 = np.ones(a2.shape[1]).reshape(1, a2.shape[1])
+        a2 = np.concatenate((bias2, a2), axis=0)
+        # first dropout mask here - first hidden layer
+        a2 *= np.random.binomial(n=1, p=p, size=a2.shape)
+
+        z3 = np.dot(self.w2, a2)
+        a3 = self.f(z3)
+        bias3 = np.ones(a3.shape[1]).reshape(1, a3.shape[1])
+        a3 = np.concatenate((bias3, a3), axis=0)
+        # second dropout mask here - second hidden layer
+        a3 *= np.random.binomial(n=1, p=p, size=a3.shape)
+
+        z4 = np.dot(self.w3, a3)
+        a4 = self.f(z4)
+        return {'z2': z2, 'a2': a2, 'z3': z3, 'a3': a3, 'z4': z4, 'a4': a4}
+
+
 
     def j(self, data, label_matrix):
         """
@@ -108,7 +136,7 @@ class ann_2:
         # is it possible to have a function to initialise data and labels
         m = label_matrix.shape[0]
         # call to this function is where dropout would be called
-        f_pass = self.forward_propagation(data)
+        f_pass = self.forward_propagation_dropout(data)
         bias1 = np.ones(data.T.shape[1]).reshape(1, data.T.shape[1])
         data = np.concatenate((bias1, data.T), axis=0)
         d4 = f_pass['a4'].T - label_matrix
@@ -143,52 +171,67 @@ class ann_2:
         label_matrix = self.val_mat(labels)
         cost = self.j(data, label_matrix)
         # initialise accumulators
-        D1_accum = 0
-        D2_accum = 0
-        D3_accum = 0
-        w1_update_accum = 0
-        w2_update_accum = 0
-        w3_update_accum = 0
+        grad_accum = 0
+        update_accum = 0
         iteration = 0
         for i in range(self.epochs):
-            batch = np.random.choice(m, self.batch_size, replace=False).astype(int)
+            batch = np.random.choice(m, self.batch_size, replace=False)
             # compute gradient
-            gt = self.gradients(data[batch], label_matrix[batch])
-            # this will return a dictionary of D1, D2, D3
-            # i.e., gt['D1'], gt['D2'], gt['D3']
-            # these will need to be applied to weight (w1, w2, w3) separately
-
+            gt_sep = self.gradients(data[batch], label_matrix[batch])
+            gt = self.unroll_params(gt_sep['D1'],gt_sep['D2'],gt_sep['D3'])
             # accumulate gradient for each Delta
-            # grad_accum = (rho * grad_accum) + ((1 - rho) * gt**2)
-
-            D1_accum = (self.rho * D1_accum) + ((1 - self.rho) * gt['D1']**2)
-            D2_accum = (self.rho * D2_accum) + ((1 - self.rho) * gt['D2']**2)
-            D3_accum = (self.rho * D3_accum) + ((1 - self.rho) * gt['D3']**2)
-
-            # compute update for each set of weights
-            #  update = -( (np.sqrt(update_accum + self.eta) * gt) / (np.sqrt(grad_accum + self.eta)) )
-
-            w1_update = -((np.sqrt(w1_update_accum + self.eta) * gt['D1']) / (np.sqrt(D1_accum + self.eta)))
-            w2_update = -((np.sqrt(w2_update_accum + self.eta) * gt['D2']) / (np.sqrt(D2_accum + self.eta)))
-            w3_update = -((np.sqrt(w3_update_accum + self.eta) * gt['D3']) / (np.sqrt(D3_accum + self.eta)))
-
+            grad_accum = (self.rho * grad_accum) + ((1 - self.rho) * gt**2)
+            # compute update for weights
+            update = -((np.sqrt(update_accum + self.eta) * gt) / (np.sqrt(grad_accum + self.eta)))
             # accumulate update
-            # update_accum = (rho * update_accum) + ((1 - rho)* update**2)
-
-            w1_update_accum = (self.rho * w1_update_accum) + ((1 - self.rho)* w1_update**2)
-            w2_update_accum = (self.rho * w2_update_accum) + ((1 - self.rho)* w2_update**2)
-            w3_update_accum = (self.rho * w3_update_accum) + ((1 - self.rho)* w3_update**2)
-
+            update_accum = (self.rho * update_accum) + ((1 - self.rho)*update**2)
             # apply update
-            # nn_params += update
-            self.w1 += w1_update
-            self.w2 += w2_update
-            self.w3 += w3_update
-
+            nn_params = self.unroll_params(self.w1, self.w2, self.w3)
+            nn_params += update
+            # split nn_params back into w1, w2, w3
+            params = self.roll_params(nn_params)
+            self.w1 = params['w1']
+            self.w2 = params['w2']
+            self.w3 = params['w3']
             # record cost + iterations
             cost_iterate = self.j(data, label_matrix)
             cost = np.append(cost, cost_iterate)
             iteration = np.append(iteration, i)
         return{'cost': cost, 'epoch': iteration}
 
+    @staticmethod
+    def unroll_params(w1, w2, w3):
+        w1_flat = w1.ravel(order='C')
+        w2_flat = w2.ravel(order='C')
+        w3_flat = w3.ravel(order='C')
+        return np.concatenate([w1_flat, w2_flat, w3_flat])
 
+    def roll_params(self, nn_params):
+        # separate weights w1, w2, w3
+        # TODO investigate way to save shapes of weights and use those
+        w2_start = (self.features + 1)*self.hl1_size
+        w2_end = w2_start + ((self.hl1_size + 1)*self.hl2_size)
+        w1 = nn_params[0:w2_start]
+        w2 = nn_params[w2_start:w2_end]
+        w3 = nn_params[w2_end:]
+        # reshape into matrices
+        w1 = w1.reshape((self.hl1_size, self.features + 1), order='C')
+        w2 = w2.reshape((self.hl2_size, self.hl1_size + 1), order='C')
+        w3 = w3.reshape((self.classes, self.hl2_size + 1), order='C')
+        return {'w1': w1, 'w2' : w2, 'w3': w3}
+
+    def predict(self, data):
+        f_pass = self.forward_propagation(data)
+        prediction = np.zeros(np.shape(f_pass['z4'])[1])
+        for i in range(len(prediction)):
+            prediction[i] = np.argmax(f_pass['a4'][:,i]) + 1
+        return prediction
+
+    def accuracy(self, data, labels):
+        predictions = self.predict(data)
+        return np.mean(predictions == labels)
+
+    def cross_entropy(self, data, labels):
+        f_pass = self.forward_propagation(data)
+        label_matrix = self.val_mat(labels)
+        return log_loss(label_matrix, f_pass['a4'].T)
