@@ -88,7 +88,3 @@ np.mean(prediction == yTest.T)
 
 prediction = kn.kNNVecNumba(xTrain, xTest, yTrain, yTest, 1)
 np.mean(prediction == yTest.T)
-
-
-a = np.array([3, 4, 5, 2, 7, 1, 9, 6])
-quicksort(a, start = 0, end = len(a)-1)
