@@ -12,7 +12,7 @@ class ann_2:
     """
     def __init__(self, features, hl1_size, hl2_size, classes,
                  epochs=10, batch_size=100, rho=0.99, eta=1e-6,
-                 reg_penalty=1, eta_init=0.1):
+                 reg_penalty=1, eta_init=0.1, p1=0.5, p2=0.5):
         """
         return a ann_2 object with these architectures
         :param features: number features input to network (input layer size)
@@ -31,21 +31,29 @@ class ann_2:
         self.eta = eta
         self.reg_penalty = reg_penalty
         self.eta_init = eta_init
-        # w1 = np.random.randn(self.hl1_size * (self.features + 1)) * np.sqrt(2.0/(self.hl1_size * (self.features + 1)))
-        # w2 = np.random.randn(self.hl2_size * (self.hl1_size + 1)) * np.sqrt(2.0/(self.hl2_size * (self.hl1_size + 1)))
-        # w3 = np.random.randn(self.classes * (self.hl2_size + 1)) * np.sqrt(2.0/(self.classes * (self.hl2_size + 1)))
+        self.p1 = p1
+        self.p2 = p2
+        self.w1 = np.random.randn(self.hl1_size * (self.features + 1)) * np.sqrt(2.0/(self.hl1_size * (self.features + 1)))
+        self.w2 = np.random.randn(self.hl2_size * (self.hl1_size + 1)) * np.sqrt(2.0/(self.hl2_size * (self.hl1_size + 1)))
+        self.w3 = np.random.randn(self.classes * (self.hl2_size + 1)) * np.sqrt(2.0/(self.classes * (self.hl2_size + 1)))
+        self.w1 = np.reshape(self.w1, (self.hl1_size, self.features + 1))
+        self.w2 = np.reshape(self.w2, (self.hl2_size, self.hl1_size + 1))
+        self.w3 = np.reshape(self.w3, (self.classes, self.hl2_size + 1))
         # do these need to have their matrix shapes
-        self.w1 = np.random.normal(0, self.eta_init, (self.hl1_size, self.features + 1))
-        self.w2 = np.random.normal(0, self.eta_init, (self.hl2_size, self.hl1_size + 1))
-        self.w3 = np.random.normal(0, self.eta_init, (self.classes, self.hl2_size + 1))
+        # self.w1 = np.random.normal(0, self.eta_init, (self.hl1_size, self.features + 1))
+        # self.w2 = np.random.normal(0, self.eta_init, (self.hl2_size, self.hl1_size + 1))
+        # self.w3 = np.random.normal(0, self.eta_init, (self.classes, self.hl2_size + 1))
 
     # initialise hyper parameters - method just to change the hyperparameters
-    def set_hyperparams(self, epochs=100, batch_size=100, rho=0.99, eta=1e-6, reg_penalty=1):
+    def set_hyperparams(self, epochs=100, batch_size=100, rho=0.99, eta=1e-6, reg_penalty=1,
+                        p1=0.5, p2=0.5):
         self.epochs = epochs
         self.batch_size = batch_size
         self.rho = rho
         self.eta = eta
         self.reg_penalty = reg_penalty
+        self.p1 = p1
+        self.p2 = p2
 
     # is there some way to do this using numpy or numba/numexpr to make it faster
     @staticmethod
@@ -91,7 +99,7 @@ class ann_2:
     # should have some function for checking the data and labels are in the correct dimension
     # this could be done at the train level
 
-    def forward_propagation_dropout(self, data, p=0.5):
+    def forward_propagation_dropout(self, data):
         bias1 = np.ones(data.T.shape[1]).reshape(1, data.T.shape[1])
         data = np.concatenate((bias1, data.T), axis=0)
         z2 = np.dot(self.w1, data)
@@ -101,14 +109,14 @@ class ann_2:
         bias2 = np.ones(a2.shape[1]).reshape(1, a2.shape[1])
         a2 = np.concatenate((bias2, a2), axis=0)
         # first dropout mask here - first hidden layer
-        a2 *= np.random.binomial(n=1, p=p, size=a2.shape)
+        a2 *= np.random.binomial(n=1, p=self.p1, size=a2.shape)
 
         z3 = np.dot(self.w2, a2)
         a3 = self.f(z3)
         bias3 = np.ones(a3.shape[1]).reshape(1, a3.shape[1])
         a3 = np.concatenate((bias3, a3), axis=0)
         # second dropout mask here - second hidden layer
-        a3 *= np.random.binomial(n=1, p=p, size=a3.shape)
+        a3 *= np.random.binomial(n=1, p=self.p2, size=a3.shape)
 
         z4 = np.dot(self.w3, a3)
         a4 = self.f(z4)
@@ -197,7 +205,40 @@ class ann_2:
             cost_iterate = self.j(data, label_matrix)
             cost = np.append(cost, cost_iterate)
             iteration = np.append(iteration, i)
+        print("completed %d epochs" % (self.epochs))
         return{'cost': cost, 'epoch': iteration}
+
+
+    def train0(self, data, labels):
+        """ same function as train but without the recording of cost and iteration"""
+        m = len(labels)
+        label_matrix = self.val_mat(labels)
+        # initialise accumulators
+        grad_accum = 0
+        update_accum = 0
+        for i in range(self.epochs):
+            batch = np.random.choice(m, self.batch_size, replace=False)
+            # compute gradient
+            gt_sep = self.gradients(data[batch], label_matrix[batch])
+            gt = self.unroll_params(gt_sep['D1'],gt_sep['D2'],gt_sep['D3'])
+            # accumulate gradient for each Delta
+            grad_accum = (self.rho * grad_accum) + ((1 - self.rho) * gt**2)
+            # compute update for weights
+            update = -((np.sqrt(update_accum + self.eta) * gt) / (np.sqrt(grad_accum + self.eta)))
+            # accumulate update
+            update_accum = (self.rho * update_accum) + ((1 - self.rho)*update**2)
+            # apply update
+            nn_params = self.unroll_params(self.w1, self.w2, self.w3)
+            nn_params += update
+            # split nn_params back into w1, w2, w3
+            params = self.roll_params(nn_params)
+            self.w1 = params['w1']
+            self.w2 = params['w2']
+            self.w3 = params['w3']
+            # record cost + iterations
+        print("completed %d epochs" % (self.epochs))
+        return
+
 
     @staticmethod
     def unroll_params(w1, w2, w3):
@@ -226,6 +267,10 @@ class ann_2:
         for i in range(len(prediction)):
             prediction[i] = np.argmax(f_pass['a4'][:,i]) + 1
         return prediction
+
+    def predict_prob(self, data):
+        f_pass = self.forward_propagation(data)
+        return f_pass['a4']
 
     def accuracy(self, data, labels):
         predictions = self.predict(data)
